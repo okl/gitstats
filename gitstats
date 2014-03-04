@@ -180,6 +180,8 @@ class DataCollector:
 
 		# deploys
 		self.deploys = {}
+		self.total_commits_deployed = 0
+		self.total_seconds_from_commit_to_deploy = 0
 
 		self.files_by_stamp = {} # stamp -> files
 
@@ -303,18 +305,22 @@ class GitDataCollector(DataCollector):
 					stamp = 0
 				self.tags[tag] = { 'stamp': stamp, 'hash' : hash, 'date' : datetime.datetime.fromtimestamp(stamp).strftime('%Y-%m-%d'), 'commits': 0, 'authors': {}, 'deployed': False }
 				if self.is_tag_deployed(tag):
-					self.deploys[tag] = copy.deepcopy(self.tags[tag])
 					self.tags[tag]['deployed'] = True
+					self.deploys[tag] = copy.deepcopy(self.tags[tag])
 
 		# collect info on tags, starting from latest
 		tags_sorted_by_date_desc = map(lambda el : el[1], reversed(sorted(map(lambda el : (el[1]['date'], el[0]), self.tags.items()))))
 		prev = None
-		deploy = { 'commits': 0, 'authors': {} }
+		deploy = { 'commits': 0, 'authors': {}, 'stamp': None }
 		for tag in reversed(tags_sorted_by_date_desc):
 			if self.tags[tag]['deployed']:
 				self.deploys[tag]['commits'] = deploy['commits']
 				self.deploys[tag]['authors'] = deploy['authors']
-				deploy = { 'commits': 0, 'authors': {} }
+				if deploy['stamp'] is None:
+					self.deploys[tag]['prev_deploy_stamp'] = self.tags[tag]['stamp']
+				else:
+					self.deploys[tag]['prev_deploy_stamp'] = deploy['stamp']
+				deploy = { 'commits': 0, 'authors': {}, 'stamp': self.tags[tag]['stamp'] }
 
 			cmd = 'git shortlog -s "%s"' % tag
 			if prev != None:
@@ -332,25 +338,26 @@ class GitDataCollector(DataCollector):
 					author = conf['merge_authors'][author]
 				self.tags[tag]['commits'] += commits
 				self.tags[tag]['authors'][author] = commits
-				if self.tags[tag]['deployed']:
-					self.deploys[tag]['commits'] += commits
-					self.deploys[tag][author] = commits if author not in self.deploys[tag] else self.deploys[tag][author] + commits
-				else:
-					deploy['commits'] += commits
-					deploy['authors'][author] = commits if author not in deploy['authors'] else deploy['authors'][author] + commits
+				#if self.tags[tag]['deployed']:
+				#	self.deploys[tag]['commits'] += commits
+				#	self.deploys[tag][author] = commits if author not in self.deploys[tag] else self.deploys[tag][author] + commits
+				#else:
+				#	deploy['commits'] += commits
+				#	deploy['authors'][author] = commits if author not in deploy['authors'] else deploy['authors'][author] + commits
 
 		# Collect revision statistics
 		# Outputs "<stamp> <date> <time> <timezone> <author> '<' <mail> '>'"
-		lines = getpipeoutput(['git rev-list --pretty=format:"%%at %%ai %%aN <%%aE>" %s' % getcommitrange('HEAD'), 'grep -v ^commit']).split('\n')
+		lines = getpipeoutput(['git rev-list --pretty=format:"%%h %%at %%ai %%aN <%%aE>" %s' % getcommitrange('HEAD'), 'grep -v ^commit']).split('\n')
 		for line in lines:
-			parts = line.split(' ', 4)
+			parts = line.split(' ', 5)
 			author = ''
+			commit_hash = parts[0]
 			try:
-				stamp = int(parts[0])
+				stamp = int(parts[1])
 			except ValueError:
 				stamp = 0
-			timezone = parts[3]
-			author, mail = parts[4].split('<', 1)
+			timezone = parts[4]
+			author, mail = parts[5].split('<', 1)
 			author = author.rstrip()
 			if author in conf['merge_authors']:
 				author = conf['merge_authors'][author]
@@ -448,6 +455,10 @@ class GitDataCollector(DataCollector):
 
 			# timezone
 			self.commits_by_timezone[timezone] = self.commits_by_timezone.get(timezone, 0) + 1
+
+			# deployment stats by commit
+			self.deploy_commit(commit_hash, date, author)
+
 
 		# outputs "<stamp> <files>" for each revision
 		revlines = getpipeoutput(['git rev-list --pretty=format:"%%at %%T" %s' % getcommitrange('HEAD'), 'grep -v ^commit']).strip().split('\n')
@@ -649,7 +660,26 @@ class GitDataCollector(DataCollector):
 					(files, inserted, deleted) = (0, 0, 0)
 
 	def is_tag_deployed(self, tag):
-		return re.search(r'build-release_(.*)_0', tag) or tag in ('build-master_366', 'build-master_362', 'build-master_236', 'build-master_231', 'build-master_227')
+		# todo: move these to a closure or read each rep's regex from a file or whatever
+						#ewok
+		return (re.search(r'build-release_(.*)_0', tag)
+						# api_server
+			or tag in ('build-master_366', 'build-master_362', 'build-master_236', 'build-master_231', 'build-master_227')
+						#catalog_service
+			or tag in ('catalog_service-master_48', 'catalog_service-master_58', 'catalog_service-master_68', 'catalog_service-master_78', 'catalog_service-master_88', 'catalog_service-master_98', 'catalog_service-master_108'))
+
+	def deploy_commit(self, commit_hash, date, author):
+		for deploy in self.deploys:
+			deploy_date = datetime.datetime.fromtimestamp(float(self.deploys[deploy]['stamp']))
+			prev_deploy_date = datetime.datetime.fromtimestamp(float(self.deploys[deploy]['prev_deploy_stamp']))
+			if date >= prev_deploy_date and date < deploy_date:
+				branches = getpipeoutput(['git branch --contains "%s"' % commit_hash])
+				if 'master' in branches:
+				    self.total_seconds_from_commit_to_deploy = (deploy_date - date).total_seconds()
+				    self.total_commits_deployed += 1
+				    self.deploys[deploy]['commits'] += 1
+				    self.deploys[deploy]['authors'][author] = 1 if author not in self.deploys[deploy]['authors'] else self.deploys[deploy]['authors'][author] + 1
+				    #print 'deploy %s for commit %s with stamp %i' % (deploy, commit_key, stamp)
 
 	def refine(self):
 		# authors
@@ -724,6 +754,15 @@ class GitDataCollector(DataCollector):
 
 	def getTotalSize(self):
 		return self.total_size
+
+	def getTotalCommitsDeployed(self):
+		return self.total_commits_deployed
+
+	def getMeanTimeFromCommitToDeploy(self):
+		if self.total_commits_deployed == 0:
+			return 0
+		else:
+			return self.total_seconds_from_commit_to_deploy / self.total_commits_deployed
 
 	def revToDate(self, rev):
 		stamp = int(getpipeoutput(['git log --pretty=format:%%at "%s" -n 1' % rev]))
@@ -1193,7 +1232,11 @@ class HTMLReportCreator(ReportCreator):
 		f.write('<dl>')
 		f.write('<dt>Total deploys</dt><dd>%d</dd>' % len(data.deploys))
 		if len(data.deploys) > 0:
-			f.write('<dt>Average commits per deploy</dt><dd>%.2f</dd>' % (1.0 * data.getTotalCommits() / len(data.deploys)))
+			f.write('<dt>Commits Deployed</dt><dd>%i</dd>' % data.getTotalCommitsDeployed())
+			f.write('<dt>Commits Not Yet Deployed</dt><dd>%i</dd>' % (data.getTotalCommits() - data.getTotalCommitsDeployed()))
+			f.write('<dt>Average commits per deploy</dt><dd>%.2f</dd>' % (1.0 * data.getTotalCommitsDeployed() / len(data.deploys)))
+			f.write('<dt>Mean time from commit to deploy (seconds)</dt><dd>%.2f</dd>' % data.getMeanTimeFromCommitToDeploy() )
+			#f.write('<dt>Mean time from commit to deploy (h:m:s)</dt><dd>%s</dd>' % (str(datetime.timedelta(data.getMeanTimeFromCommitToDeploy() ))))
 		f.write('</dl>')
 
 		f.write('<table class="deploys">')
