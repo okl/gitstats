@@ -347,7 +347,7 @@ class GitDataCollector(DataCollector):
 
 		# Collect revision statistics
 		# Outputs "<stamp> <date> <time> <timezone> <author> '<' <mail> '>'"
-		lines = getpipeoutput(['git rev-list --pretty=format:"%%h %%at %%ai %%aN <%%aE>" %s' % getcommitrange('HEAD'), 'grep -v ^commit']).split('\n')
+		lines = getpipeoutput(['git rev-list --pretty=format:"%%H %%at %%ai %%aN <%%aE>" %s' % getcommitrange('HEAD'), 'grep -v ^commit']).split('\n')
 		for line in lines:
 			parts = line.split(' ', 5)
 			author = ''
@@ -1235,7 +1235,7 @@ class HTMLReportCreator(ReportCreator):
 			f.write('<dt>Commits Deployed</dt><dd>%i</dd>' % data.getTotalCommitsDeployed())
 			f.write('<dt>Commits Not Yet Deployed</dt><dd>%i</dd>' % (data.getTotalCommits() - data.getTotalCommitsDeployed()))
 			f.write('<dt>Average commits per deploy</dt><dd>%.2f</dd>' % (1.0 * data.getTotalCommitsDeployed() / len(data.deploys)))
-			f.write('<dt>Mean time from commit to deploy (seconds)</dt><dd>%.2f</dd>' % data.getMeanTimeFromCommitToDeploy() )
+			f.write('<dt>Mean time from commit to deploy (hours)</dt><dd>%.2f</dd>' % (data.getMeanTimeFromCommitToDeploy() / 3600))
 			#f.write('<dt>Mean time from commit to deploy (h:m:s)</dt><dd>%s</dd>' % (str(datetime.timedelta(data.getMeanTimeFromCommitToDeploy() ))))
 		f.write('</dl>')
 
